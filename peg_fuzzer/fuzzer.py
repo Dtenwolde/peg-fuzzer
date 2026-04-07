@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from peg_fuzzer.coverage import RuleCoverage
 from peg_fuzzer.dedup import KnownIssues
 from peg_fuzzer.grammar.parser import load_grammar_dir
 from peg_fuzzer.generator.generator import Generator
@@ -17,6 +18,7 @@ from peg_fuzzer.runner.runner import run_both
 _REPO_ROOT = Path(__file__).parent.parent
 _INTERESTING_DIR = Path("interesting")
 _KNOWN_ISSUES_FILE = _INTERESTING_DIR / "known_issues.json"
+_COVERAGE_DB = _INTERESTING_DIR / "coverage.db"
 _WORK_DIR = _REPO_ROOT / "test"
 
 
@@ -109,12 +111,23 @@ def run_fuzzer(
 
     bar.close()
 
+    # Persist coverage stats to DuckDB.
+    cov_db = RuleCoverage(_COVERAGE_DB)
+    cov_db.merge(gen.rule_hits, queries_run=count, seed=seed, start_rule=start_rule)
+
+    cov = gen.coverage_stats()
     print(
         f"\nDone: {count} queries"
         f"\n  PEG      -- OK={peg_counts[Outcome.OK]}  ERR={peg_counts[Outcome.ERROR]}  CRASH={peg_counts[Outcome.CRASH]}"
         f"\n  Postgres -- OK={pg_counts[Outcome.OK]}  ERR={pg_counts[Outcome.ERROR]}  CRASH={pg_counts[Outcome.CRASH]}"
         f"\n  New issues={new_issues}  Known (skipped)={known_skipped}"
     )
+    print(cov_db.report(set(gen.grammar.rules), top_n=15 if verbose else 10))
+    if verbose and cov["uncovered"]:
+        print(f"\n  All uncovered rules ({len(cov['uncovered'])}):")
+        for name in cov["uncovered"]:
+            print(f"    {name}")
+    cov_db.close()
 
 
 def _next_index(directory: Path) -> int:

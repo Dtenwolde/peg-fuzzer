@@ -12,6 +12,7 @@ Design:
 from __future__ import annotations
 
 import random
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -190,6 +191,18 @@ class Generator:
         self.rng = rng
         self.max_depth = max_depth
         self._cache = _RuleCache()
+        self.rule_hits: Counter[str] = Counter()
+
+    def coverage_stats(self) -> dict:
+        """Return a dict with covered/total rule counts and the uncovered rule names."""
+        all_rules = set(self.grammar.rules)
+        covered = {r for r in all_rules if self.rule_hits.get(r, 0) > 0}
+        uncovered = all_rules - covered
+        return {
+            "total": len(all_rules),
+            "covered": len(covered),
+            "uncovered": sorted(uncovered),
+        }
 
     def generate(self, start_rule: str = "Statement") -> str:
         parts = self._expand_rule(start_rule, depth=0, active=frozenset(), param_nodes={})
@@ -218,6 +231,7 @@ class Generator:
         if rule_name in active and depth >= self.max_depth:
             return []
 
+        self.rule_hits[rule_name] += 1
         new_active = active | {rule_name}
         node = self._cache.get(rule)
         return self._expand_node(node, depth, rule.parameters, new_active, param_nodes)
