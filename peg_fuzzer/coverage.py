@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS run_log (
     id         INTEGER PRIMARY KEY,
     seed       BIGINT,
     queries    INTEGER,
+    new_issues INTEGER,
     start_rule VARCHAR,
     ts         TIMESTAMP DEFAULT now()
 );
@@ -41,7 +42,14 @@ class RuleCoverage:
         self._con = duckdb.connect(str(db_path))
         self._con.execute(_SCHEMA)
 
-    def merge(self, run_hits: Counter[str], queries_run: int, seed: int, start_rule: str) -> None:
+    def merge(
+        self,
+        run_hits: Counter[str],
+        queries_run: int,
+        seed: int,
+        start_rule: str,
+        new_issues: int = 0,
+    ) -> None:
         """Merge one run's hit counts into the cumulative totals and log the run."""
         if run_hits:
             rows = list(run_hits.items())
@@ -54,8 +62,8 @@ class RuleCoverage:
             )
         next_id = self._con.execute("SELECT coalesce(max(id), 0) + 1 FROM run_log").fetchone()[0]
         self._con.execute(
-            "INSERT INTO run_log (id, seed, queries, start_rule) VALUES (?, ?, ?, ?)",
-            [next_id, seed, queries_run, start_rule],
+            "INSERT INTO run_log (id, seed, queries, new_issues, start_rule) VALUES (?, ?, ?, ?, ?)",
+            [next_id, seed, queries_run, new_issues, start_rule],
         )
 
     def total_queries(self) -> int:

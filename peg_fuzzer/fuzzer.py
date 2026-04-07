@@ -113,7 +113,7 @@ def run_fuzzer(
 
     # Persist coverage stats to DuckDB.
     cov_db = RuleCoverage(_COVERAGE_DB)
-    cov_db.merge(gen.rule_hits, queries_run=count, seed=seed, start_rule=start_rule)
+    cov_db.merge(gen.rule_hits, queries_run=count, seed=seed, start_rule=start_rule, new_issues=new_issues)
 
     cov = gen.coverage_stats()
     print(
