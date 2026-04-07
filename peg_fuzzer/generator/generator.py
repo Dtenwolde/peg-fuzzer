@@ -186,10 +186,17 @@ class _RuleCache:
 # -------------------------------------------------------------------
 
 class Generator:
-    def __init__(self, grammar: Grammar, rng: random.Random, max_depth: int = DEFAULT_MAX_DEPTH):
+    def __init__(
+        self,
+        grammar: Grammar,
+        rng: random.Random,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        pools: dict | None = None,
+    ):
         self.grammar = grammar
         self.rng = rng
         self.max_depth = max_depth
+        self.pools = pools or {}
         self._cache = _RuleCache()
         self.rule_hits: Counter[str] = Counter()
 
@@ -221,7 +228,7 @@ class Generator:
     ) -> list[str]:
         # Terminal overrides (Identifier, NumberLiteral, PlainIdentifier, etc.)
         if rule_name in OVERRIDES:
-            return [generate_terminal(OVERRIDES[rule_name], self.rng)]
+            return [generate_terminal(OVERRIDES[rule_name], self.rng, self.pools)]
 
         rule = self.grammar.rules.get(rule_name)
         if rule is None:

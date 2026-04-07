@@ -33,7 +33,14 @@ _TYPE_NAMES = [
 _NUMERIC_EDGES = ["0", "-1", "1", "2147483647", "-2147483648", "0.0", "-0.5"]
 
 
-def generate_terminal(kind: OverrideKind, rng: random.Random) -> str:
+def generate_terminal(
+    kind: OverrideKind,
+    rng: random.Random,
+    pools: dict[OverrideKind, list[str]] | None = None,
+) -> str:
+    # Dynamic pools (from live DuckDB catalog) take precedence over hardcoded defaults.
+    if pools and kind in pools and pools[kind]:
+        return rng.choice(pools[kind])
     if kind == OverrideKind.NUMBER_LITERAL:
         return _number(rng)
     if kind == OverrideKind.STRING_LITERAL:

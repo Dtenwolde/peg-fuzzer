@@ -11,6 +11,7 @@ from tqdm import tqdm
 from peg_fuzzer.coverage import RuleCoverage
 from peg_fuzzer.dedup import KnownIssues
 from peg_fuzzer.grammar.parser import load_grammar_dir
+from peg_fuzzer.generator.catalog import load_catalog_pools
 from peg_fuzzer.generator.generator import Generator
 from peg_fuzzer.runner.result import Outcome
 from peg_fuzzer.runner.runner import run_both
@@ -38,7 +39,8 @@ def run_fuzzer(
     print(f"Seed: {seed}  (rerun with --seed {seed} to reproduce)")
     rng = random.Random(seed)
     grammar = load_grammar_dir(grammar_dir)
-    gen = Generator(grammar, rng)
+    pools = load_catalog_pools()
+    gen = Generator(grammar, rng, pools=pools)
     known = KnownIssues(_KNOWN_ISSUES_FILE)
 
     interesting_index = _next_index(_INTERESTING_DIR)
