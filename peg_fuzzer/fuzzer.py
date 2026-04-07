@@ -11,10 +11,10 @@ from tqdm import tqdm
 from peg_fuzzer.coverage import RuleCoverage
 from peg_fuzzer.dedup import KnownIssues
 from peg_fuzzer.grammar.parser import load_grammar_dir
-from peg_fuzzer.generator.catalog import load_catalog_pools
+from peg_fuzzer.generator.catalog import build_schema_setup, load_catalog_pools
 from peg_fuzzer.generator.generator import Generator
 from peg_fuzzer.runner.result import Outcome
-from peg_fuzzer.runner.runner import run_both
+from peg_fuzzer.runner.runner import FuzzSession
 
 _REPO_ROOT = Path(__file__).parent.parent
 _INTERESTING_DIR = Path("interesting")
@@ -40,8 +40,11 @@ def run_fuzzer(
     rng = random.Random(seed)
     grammar = load_grammar_dir(grammar_dir)
     pools = load_catalog_pools()
+    schema_pools, setup_sql = build_schema_setup()
+    pools.update(schema_pools)
     gen = Generator(grammar, rng, pools=pools)
     known = KnownIssues(_KNOWN_ISSUES_FILE)
+    session = FuzzSession(setup_sql=setup_sql, work_dir=_WORK_DIR)
 
     interesting_index = _next_index(_INTERESTING_DIR)
 
@@ -65,7 +68,7 @@ def run_fuzzer(
             bar.update(1)
             continue
 
-        cmp = run_both(sql, work_dir=_WORK_DIR)
+        cmp = session.run(sql)
 
         peg_counts[cmp.peg.outcome] += 1
         pg_counts[cmp.postgres.outcome] += 1
@@ -112,6 +115,7 @@ def run_fuzzer(
         bar.update(1)
 
     bar.close()
+    session.close()
 
     # Persist coverage stats to DuckDB.
     cov_db = RuleCoverage(_COVERAGE_DB)

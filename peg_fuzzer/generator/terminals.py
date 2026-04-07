@@ -30,7 +30,14 @@ _TYPE_NAMES = [
 ]
 
 # Edge-case numeric values worth hitting explicitly.
-_NUMERIC_EDGES = ["0", "-1", "1", "2147483647", "-2147483648", "0.0", "-0.5"]
+_NUMERIC_EDGES = [
+    "0", "-1", "1", "2147483647", "-2147483648", "0.0", "-0.5",
+    "0xFF", "0x00", "0xDEADBEEF",  # hex literals
+]
+
+# DuckDB's built-in catalog and schema names.
+_CATALOG_NAMES = ["memory", "system", "temp"]
+_SCHEMA_NAMES = ["main", "pg_catalog", "information_schema"]
 
 
 def generate_terminal(
@@ -49,6 +56,12 @@ def generate_terminal(
         return rng.choice(_OPERATORS_POOL)
     if kind == OverrideKind.TYPE_NAME:
         return rng.choice(_TYPE_NAMES)
+    if kind == OverrideKind.PARAMETER:
+        return f"${rng.randint(1, 9)}"
+    if kind in (OverrideKind.CATALOG_NAME,):
+        return rng.choice(_CATALOG_NAMES)
+    if kind in (OverrideKind.SCHEMA_NAME, OverrideKind.RESERVED_SCHEMA_NAME):
+        return rng.choice(_SCHEMA_NAMES)
     # All other identifier-like kinds use the same pool; the kind distinction
     # matters for autocomplete suggestions but not for structural generation.
     return _identifier(rng)
@@ -82,10 +95,24 @@ def _number(rng: random.Random) -> str:
 
 def _string_literal(rng: random.Random) -> str:
     roll = rng.random()
-    if roll < 0.05:
+    if roll < 0.04:
         return "''"  # empty string
-    if roll < 0.10:
+    if roll < 0.08:
         return "' '"  # single space
+    if roll < 0.12:
+        return "'''''"  # just escaped quotes: '''
+    if roll < 0.16:
+        # embedded newline / tab
+        esc = rng.choice(["\\n", "\\t", "\\r"])
+        return f"'{esc}'"
+    if roll < 0.20:
+        # long string (stress buffer handling)
+        body = "x" * rng.randint(64, 256)
+        return f"'{body}'"
+    if roll < 0.24:
+        # SQL-like content that might confuse naive parsers
+        snippet = rng.choice(["'; DROP TABLE t; --", "1 OR 1=1", "NULL", "0x41"])
+        return f"'{snippet}'"
     length = rng.randint(1, 12)
     chars = string.ascii_letters + string.digits + "_ -."
     body = "".join(rng.choice(chars) for _ in range(length))

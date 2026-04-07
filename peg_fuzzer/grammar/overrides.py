@@ -22,6 +22,7 @@ class OverrideKind(Enum):
     NUMBER_LITERAL = auto()
     STRING_LITERAL = auto()
     OPERATOR_LITERAL = auto()
+    PARAMETER = auto()
 
 
 # Maps grammar rule names to override kinds.
@@ -51,5 +52,12 @@ OVERRIDES: dict[str, OverrideKind] = {
     # PlainIdentifier uses a REGEX token which the generator cannot expand;
     # treat it as a plain variable name.
     "PlainIdentifier": OverrideKind.VARIABLE,
-    "Parameter": OverrideKind.NUMBER_LITERAL,  # $1 style -- generate a plain number
+    "Parameter": OverrideKind.PARAMETER,  # $1 style positional parameter
+    # ColLabel / ColId expand into the full keyword grammar, causing reserved
+    # words (ABORT, BOOLEAN, GRANT...) to appear in identifier positions and
+    # producing invalid `KEYWORD : expression` patterns. Override to a plain
+    # identifier so only safe names from the pool are used.
+    "ColLabel":      OverrideKind.VARIABLE,
+    "ColId":         OverrideKind.VARIABLE,
+    "ColIdOrString": OverrideKind.VARIABLE,
 }

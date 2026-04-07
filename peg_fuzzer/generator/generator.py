@@ -216,6 +216,48 @@ class Generator:
         return " ".join(p for p in parts if p)
 
     # ------------------------------------------------------------------
+    # Simple-option selection (used at max depth)
+    # ------------------------------------------------------------------
+
+    def _pick_simple_option(self, options: list[SeqNode]) -> SeqNode:
+        """Return the first option that expands without recursive grammar rules.
+
+        Falls back to options[0] if none qualifies (preserving old behaviour).
+        """
+        for opt in options:
+            if self._is_simple_node(opt, frozenset()):
+                return opt
+        return options[0]
+
+    def _is_simple_node(self, node: Node, visited: frozenset[str]) -> bool:
+        """True if node can be fully expanded using only overrides, literals,
+        optionals (skipped), and zero-count repeats -- no recursive grammar rules.
+
+        visited guards against cycles in the grammar.
+        """
+        if isinstance(node, LiteralNode):
+            return True
+        if isinstance(node, RefNode):
+            if node.ref in OVERRIDES:
+                return True
+            if node.ref in visited:
+                return False  # cycle -- treat as non-simple
+            rule = self.grammar.rules.get(node.ref)
+            if rule is None:
+                return False
+            return self._is_simple_node(self._cache.get(rule), visited | {node.ref})
+        if isinstance(node, SeqNode):
+            return all(self._is_simple_node(c, visited) for c in node.children)
+        if isinstance(node, OptNode):
+            return True  # can always emit nothing
+        if isinstance(node, ChoiceNode):
+            return any(self._is_simple_node(opt, visited) for opt in node.options)
+        if isinstance(node, RepeatNode):
+            return node.min_count == 0  # * can emit zero items
+        # FuncCallNode: parameterised rule -- assume not simple
+        return False
+
+    # ------------------------------------------------------------------
     # Expansion
     # ------------------------------------------------------------------
 
@@ -272,8 +314,11 @@ class Generator:
             if not options:
                 return []
             if depth >= self.max_depth:
-                # Pick the first alternative (ordered choice -- first is the parser's preferred)
-                chosen = options[0]
+                # Don't blindly pick options[0] -- it is often a recursive rule
+                # (e.g. ParensExpression inside SingleExpression) that collapses
+                # to () at depth limit. Find the first option that expands only
+                # through terminal overrides, literals, and skippable nodes.
+                chosen = self._pick_simple_option(options)
             else:
                 chosen = self.rng.choice(options)
             return self._expand_node(chosen, depth, rule_params, active, param_nodes)
@@ -292,7 +337,8 @@ class Generator:
                 count = min_count
             else:
                 count = min_count
-                while count < 5 and self.rng.random() < 0.35:
+                p = max(0.0, 0.40 - 0.05 * depth)
+                while count < 5 and self.rng.random() < p:
                     count += 1
             result = []
             for _ in range(count):

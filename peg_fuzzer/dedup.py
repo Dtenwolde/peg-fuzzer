@@ -36,6 +36,9 @@ def _normalize(msg: str) -> str:
     line = re.sub(r'"[^"]*"', '"<X>"', line)
     line = re.sub(r"'[^']*'", "'<X>'", line)
     line = re.sub(r"\b\d+\b", "<N>", line)
+    # Bare identifier after a colon is a specific value in the error template,
+    # e.g. "Unimplemented explain type: amount" -> "Unimplemented explain type: <X>"
+    line = re.sub(r":\s+[A-Za-z_]\w*$", ": <X>", line)
     return line
 
 
