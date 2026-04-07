@@ -11,3 +11,4 @@ build/
 *.so
 interesting/
 extension_config_local.cmake
+test/

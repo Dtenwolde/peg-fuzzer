@@ -6,6 +6,8 @@ import random
 from collections import defaultdict
 from pathlib import Path
 
+from tqdm import tqdm
+
 from peg_fuzzer.dedup import KnownIssues
 from peg_fuzzer.grammar.parser import load_grammar_dir
 from peg_fuzzer.generator.generator import Generator
@@ -29,6 +31,9 @@ def run_fuzzer(
     seed: int | None = None,
     verbose: bool = False,
 ) -> None:
+    if seed is None:
+        seed = random.randrange(2**32)
+    print(f"Seed: {seed}  (rerun with --seed {seed} to reproduce)")
     rng = random.Random(seed)
     grammar = load_grammar_dir(grammar_dir)
     gen = Generator(grammar, rng)
@@ -41,11 +46,19 @@ def run_fuzzer(
     new_issues = 0
     known_skipped = 0
 
+    bar = tqdm(
+        total=count,
+        unit="q",
+        dynamic_ncols=True,
+    )
+    bar.set_postfix(new=0, skip=0)
+
     for _ in range(count):
         try:
             sql = gen.generate(start_rule)
         except Exception as e:
-            print(f"[GENFAIL] {e}")
+            tqdm.write(f"[GENFAIL] {e}")
+            bar.update(1)
             continue
 
         cmp = run_both(sql, work_dir=_WORK_DIR)
@@ -55,13 +68,16 @@ def run_fuzzer(
 
         if not (cmp.any_crash or cmp.diverged):
             if verbose:
-                print(f"[{_tag(cmp.peg.outcome):<5}] {sql!r}")
+                tqdm.write(f"[{_tag(cmp.peg.outcome):<5}] {sql!r}")
                 if cmp.peg.error_msg:
-                    print(f"        PEG: {cmp.peg.error_msg.splitlines()[0]}")
+                    tqdm.write(f"        PEG: {cmp.peg.error_msg.splitlines()[0]}")
+            bar.update(1)
             continue
 
         if known.is_known(cmp):
             known_skipped += 1
+            bar.set_postfix(new=new_issues, skip=known_skipped)
+            bar.update(1)
             continue
 
         # New issue -- save and report
@@ -81,12 +97,17 @@ def run_fuzzer(
 
         peg_t = _tag(cmp.peg.outcome)
         pg_t = _tag(cmp.postgres.outcome)
-        print(f"{label} PEG={peg_t} PG={pg_t}  {sql!r}")
+        tqdm.write(f"{label} PEG={peg_t} PG={pg_t}  {sql!r}")
         if cmp.peg.error_msg:
-            print(f"           PEG: {cmp.peg.error_msg.splitlines()[0]}")
+            tqdm.write(f"           PEG: {cmp.peg.error_msg.splitlines()[0]}")
         if cmp.postgres.error_msg:
-            print(f"           PG:  {cmp.postgres.error_msg.splitlines()[0]}")
-        print(f"           => saved {save_file}")
+            tqdm.write(f"           PG:  {cmp.postgres.error_msg.splitlines()[0]}")
+        tqdm.write(f"           => saved {save_file}")
+
+        bar.set_postfix(new=new_issues, skip=known_skipped)
+        bar.update(1)
+
+    bar.close()
 
     print(
         f"\nDone: {count} queries"
