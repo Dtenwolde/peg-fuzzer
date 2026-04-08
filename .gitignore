@@ -12,3 +12,5 @@ build/
 interesting/
 extension_config_local.cmake
 test/
+.DS_Store
+fuzzer_issues/
