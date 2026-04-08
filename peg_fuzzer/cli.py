@@ -25,8 +25,13 @@ def main() -> None:
     parser.add_argument(
         "--count",
         type=int,
-        default=100,
-        help="Number of SQL statements to generate and test (default: 100)",
+        default=None,
+        help="Number of SQL statements to generate and test",
+    )
+    parser.add_argument(
+        "--duration",
+        default=None,
+        help="Run for a fixed wall-clock time, e.g. 30s, 10m, 2h, 1h30m (overrides --count)",
     )
     parser.add_argument(
         "--seed",
@@ -48,6 +53,7 @@ def main() -> None:
         grammar_dir=args.grammar_dir,
         start_rule=args.start_rule,
         count=args.count,
+        duration=args.duration,
         seed=args.seed,
         verbose=args.verbose,
     )

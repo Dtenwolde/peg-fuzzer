@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 import random
 from collections import defaultdict
 from pathlib import Path
@@ -27,13 +29,34 @@ def _tag(outcome: Outcome) -> str:
     return {Outcome.OK: "OK", Outcome.ERROR: "ERR", Outcome.CRASH: "CRASH"}[outcome]
 
 
+def _parse_duration(s: str) -> float:
+    """Parse a human duration string like '30s', '10m', '2h', '1h30m' -> seconds."""
+    pattern = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", s.strip())
+    if not pattern or not any(pattern.groups()):
+        raise ValueError(
+            f"Invalid duration {s!r}. Use e.g. '30s', '10m', '2h', '1h30m'."
+        )
+    h, m, sec = (int(g or 0) for g in pattern.groups())
+    return h * 3600 + m * 60 + sec
+
+
 def run_fuzzer(
     grammar_dir: str,
     start_rule: str = "Statement",
-    count: int = 100,
+    count: int | None = None,
+    duration: str | None = None,
     seed: int | None = None,
     verbose: bool = False,
 ) -> None:
+    # Resolve run limit: duration takes priority over count; default 100 queries.
+    deadline: float | None = None
+    if duration is not None:
+        deadline = time.monotonic() + _parse_duration(duration)
+        limit = None
+        print(f"Running for {duration}")
+    else:
+        limit = count if count is not None else 100
+
     if seed is None:
         seed = random.randrange(2**32)
     print(f"Seed: {seed}  (rerun with --seed {seed} to reproduce)")
@@ -54,13 +77,20 @@ def run_fuzzer(
     known_skipped = 0
 
     bar = tqdm(
-        total=count,
+        total=limit,  # None -> indefinite (no ETA shown)
         unit="q",
         dynamic_ncols=True,
     )
     bar.set_postfix(new=0, skip=0)
 
-    for _ in range(count):
+    iteration = 0
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        if limit is not None and iteration >= limit:
+            break
+        iteration += 1
+
         try:
             sql = gen.generate(start_rule)
         except Exception as e:
@@ -119,11 +149,11 @@ def run_fuzzer(
 
     # Persist coverage stats to DuckDB.
     cov_db = RuleCoverage(_COVERAGE_DB)
-    cov_db.merge(gen.rule_hits, queries_run=count, seed=seed, start_rule=start_rule, new_issues=new_issues)
+    cov_db.merge(gen.rule_hits, queries_run=iteration, seed=seed, start_rule=start_rule, new_issues=new_issues)
 
     cov = gen.coverage_stats()
     print(
-        f"\nDone: {count} queries"
+        f"\nDone: {iteration} queries"
         f"\n  PEG      -- OK={peg_counts[Outcome.OK]}  ERR={peg_counts[Outcome.ERROR]}  CRASH={peg_counts[Outcome.CRASH]}"
         f"\n  Postgres -- OK={pg_counts[Outcome.OK]}  ERR={pg_counts[Outcome.ERROR]}  CRASH={pg_counts[Outcome.CRASH]}"
         f"\n  New issues={new_issues}  Known (skipped)={known_skipped}"
