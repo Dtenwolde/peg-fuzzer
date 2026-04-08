@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ DUCKDB_DIR = REPO_ROOT / "duckdb"
 BUILD_DIR = DUCKDB_DIR / "build" / "release"
 BINARY = BUILD_DIR / "duckdb"
 INTERESTING_DIR = REPO_ROOT / "interesting"
+KNOWN_ISSUES_FILE = INTERESTING_DIR / "known_issues.json"
 # Path to the local extension config, relative to DUCKDB_DIR
 EXTENSION_CONFIG = "../extension_config_local.cmake"
 
@@ -56,7 +58,7 @@ def build(branch: str | None, jobs: int) -> None:
 
 
 # ------------------------------------------------------------------
-# SQL extraction
+# SQL extraction and header parsing
 # ------------------------------------------------------------------
 
 def extract_sql(path: Path) -> str:
@@ -65,6 +67,31 @@ def extract_sql(path: Path) -> str:
     # Header comment block ends at the first blank line
     _, _, sql = text.partition("\n\n")
     return sql.strip()
+
+
+def parse_header(text: str) -> tuple[str, str, str, str]:
+    """Parse the -- PEG/Postgres comment block.
+
+    Returns (peg_outcome, peg_error, pg_outcome, pg_error) where outcome is
+    'OK' or 'ERR' and error is the raw first-line error string (may be empty).
+    """
+    peg_outcome = peg_error = pg_outcome = pg_error = ""
+    for line in text.splitlines():
+        if not line.startswith("--"):
+            break
+        m = re.match(r"--\s+PEG:\s+(OK|ERR)\s*(.*)", line)
+        if m:
+            peg_outcome, peg_error = m.group(1), m.group(2).strip()
+            continue
+        m = re.match(r"--\s+Postgres:\s+(OK|ERR)\s*(.*)", line)
+        if m:
+            pg_outcome, pg_error = m.group(1), m.group(2).strip()
+    return peg_outcome, peg_error, pg_outcome, pg_error
+
+
+def _same_result(peg_out: str, peg_err: str, pg_out: str, pg_err: str) -> bool:
+    """True when both parsers agree on outcome (OK / ERR / CRASH)."""
+    return peg_out == pg_out
 
 
 # ------------------------------------------------------------------
@@ -171,9 +198,26 @@ def main() -> None:
     print(header)
     print("-" * (len(header) + 20))
 
-    same = diverged = 0
+    # Load known issues for resolved-issue pruning.
+    sys.path.insert(0, str(REPO_ROOT))
+    from peg_fuzzer.dedup import KnownIssues
+    from peg_fuzzer.runner.result import CompareResult, Outcome, Parser, RunResult
+    known = KnownIssues(KNOWN_ISSUES_FILE)
+
+    def _outcome(s: str) -> Outcome:
+        return {"OK": Outcome.OK, "ERR": Outcome.ERROR, "CRASH": Outcome.CRASH}.get(s, Outcome.ERROR)
+
+    def _make_cmp(sql: str, po: str, pe: str, go: str, ge: str) -> CompareResult:
+        return CompareResult(
+            sql=sql,
+            peg=RunResult(sql=sql, parser=Parser.PEG, outcome=_outcome(po), error_msg=pe),
+            postgres=RunResult(sql=sql, parser=Parser.POSTGRES, outcome=_outcome(go), error_msg=ge),
+        )
+
+    same = diverged = fixed = 0
 
     for path in sql_files:
+        text = path.read_text(encoding="utf-8")
         sql = extract_sql(path)
         if not sql:
             continue
@@ -181,9 +225,18 @@ def main() -> None:
         peg_out, peg_err = run_sql(sql, peg=True, timeout=args.timeout)
         pg_out, pg_err = run_sql(sql, peg=False, timeout=args.timeout)
 
-        if peg_out == pg_out:
+        if _same_result(peg_out, peg_err, pg_out, pg_err):
             same += 1
             status = f"same ({peg_out})"
+
+            # Check if this file was previously a divergence that is now fixed.
+            orig_po, orig_pe, orig_go, orig_ge = parse_header(text)
+            if orig_po and orig_go:
+                orig_cmp = _make_cmp(sql, orig_po, orig_pe, orig_go, orig_ge)
+                if known.is_known(orig_cmp):
+                    known.mark_resolved(orig_cmp)
+                    status = "FIXED!"
+                    fixed += 1
         else:
             diverged += 1
             status = "DIVERGE"
@@ -195,7 +248,8 @@ def main() -> None:
             print(f"  {'':>{col_file}} PG:  {pg_err}")
 
     print("-" * (len(header) + 20))
-    print(f"Total: {len(sql_files)}  Diverged: {diverged}  Same: {same}")
+    fixed_note = f"  Fixed: {fixed}" if fixed else ""
+    print(f"Total: {len(sql_files)}  Diverged: {diverged}  Same: {same}{fixed_note}")
 
 
 if __name__ == "__main__":

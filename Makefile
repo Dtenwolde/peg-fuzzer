@@ -5,7 +5,7 @@ PYTEST := $(VENV)/bin/pytest
 
 GRAMMAR_DIR := duckdb/extension/autocomplete/grammar
 
-.PHONY: venv install test run verify verify-rebuild clean
+.PHONY: venv install test run verify verify-rebuild gen-tests clean
 
 venv:
 	python3 -m venv $(VENV)
@@ -27,6 +27,10 @@ verify: install
 # Force a rebuild even if the binary already exists.
 verify-rebuild: install
 	$(PYTHON) scripts/verify_interesting.py --rebuild $(if $(BRANCH),--branch $(BRANCH),) $(ARGS)
+
+# Regenerate fuzzer_issues/ .test files from interesting/diverge_*.sql
+gen-tests: install
+	$(PYTHON) scripts/gen_duckdb_tests.py $(ARGS)
 
 clean:
 	rm -rf $(VENV) __pycache__ peg_fuzzer/__pycache__ tests/__pycache__ \

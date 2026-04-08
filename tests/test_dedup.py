@@ -1,11 +1,11 @@
-"""Tests for deduplication logic."""
+"""Tests for deduplication logic and CompareResult divergence detection."""
 
 import json
 import tempfile
 from pathlib import Path
 
 from peg_fuzzer.dedup import KnownIssues, _normalize, _signature
-from peg_fuzzer.runner.result import CompareResult, Outcome, Parser, RunResult
+from peg_fuzzer.runner.result import CompareResult, Outcome, Parser, RunResult, error_class
 
 
 def _make_cmp(peg_outcome, pg_outcome, peg_err="", pg_err=""):
@@ -154,6 +154,67 @@ def test_mark_resolved_persists_across_reload():
         data = json.loads(path.read_text())
         assert data[0]["resolved"] is True
         assert ki2.is_known(cmp)
+
+
+def test_error_class_extracts_prefix():
+    assert error_class("Parser Error: syntax error at or near X") == "Parser Error"
+    assert error_class("Binder Error: column not found") == "Binder Error"
+    assert error_class("Not implemented Error: verbose vacuum") == "Not implemented Error"
+    assert error_class("") == ""
+
+
+def test_error_class_multiline_uses_first_line():
+    msg = "Parser Error: something\ndetail here"
+    assert error_class(msg) == "Parser Error"
+
+
+def test_ok_ok_not_diverged():
+    cmp = _make_cmp(Outcome.OK, Outcome.OK)
+    assert not cmp.diverged
+
+
+def test_ok_err_diverged():
+    cmp = _make_cmp(Outcome.OK, Outcome.ERROR, pg_err="Parser Error: bad")
+    assert cmp.diverged
+
+
+def test_err_ok_diverged():
+    cmp = _make_cmp(Outcome.ERROR, Outcome.OK, peg_err="Parser Error: bad")
+    assert cmp.diverged
+
+
+def test_err_err_same_class_not_diverged():
+    cmp = _make_cmp(
+        Outcome.ERROR, Outcome.ERROR,
+        peg_err="Parser Error: ORDER BY not allowed",
+        pg_err="Parser Error: syntax error at or near X",
+    )
+    assert not cmp.diverged
+
+
+def test_err_err_different_class_not_diverged():
+    # Both parsers reject -- outcome agrees, so this is NOT a divergence
+    # regardless of which error class each produces.
+    cmp = _make_cmp(
+        Outcome.ERROR, Outcome.ERROR,
+        peg_err="Parser Error: ORDER BY in a recursive query is not allowed",
+        pg_err="Catalog Error: Table with name t1 does not exist!",
+    )
+    assert not cmp.diverged
+
+
+def test_err_err_different_class_has_unique_signature():
+    a = _make_cmp(
+        Outcome.ERROR, Outcome.ERROR,
+        peg_err="Parser Error: ORDER BY not allowed",
+        pg_err="Catalog Error: table does not exist",
+    )
+    b = _make_cmp(
+        Outcome.ERROR, Outcome.ERROR,
+        peg_err="Binder Error: column not found",
+        pg_err="Not implemented Error: not yet",
+    )
+    assert _signature(a) != _signature(b)
 
 
 def test_mark_resolved_unknown_is_noop():

@@ -15,7 +15,7 @@ from peg_fuzzer.dedup import KnownIssues
 from peg_fuzzer.grammar.parser import load_grammar_dir
 from peg_fuzzer.generator.catalog import build_schema_setup, load_catalog_pools
 from peg_fuzzer.generator.generator import Generator
-from peg_fuzzer.runner.result import Outcome
+from peg_fuzzer.runner.result import Outcome, error_class
 from peg_fuzzer.runner.runner import FuzzSession
 
 _REPO_ROOT = Path(__file__).parent.parent
@@ -65,7 +65,10 @@ def run_fuzzer(
     pools = load_catalog_pools()
     schema_pools, setup_sql = build_schema_setup()
     pools.update(schema_pools)
-    gen = Generator(grammar, rng, pools=pools)
+    cov_db_pre = RuleCoverage(_COVERAGE_DB)
+    coverage_hits = cov_db_pre.load_hits()
+    cov_db_pre.close()
+    gen = Generator(grammar, rng, pools=pools, coverage_hits=coverage_hits)
     known = KnownIssues(_KNOWN_ISSUES_FILE)
     session = FuzzSession(setup_sql=setup_sql, work_dir=_WORK_DIR)
 
@@ -105,9 +108,21 @@ def run_fuzzer(
 
         if not (cmp.any_crash or cmp.diverged):
             if verbose:
-                tqdm.write(f"[{_tag(cmp.peg.outcome):<5}] {sql!r}")
-                if cmp.peg.error_msg:
-                    tqdm.write(f"        PEG: {cmp.peg.error_msg.splitlines()[0]}")
+                # Flag ERR/ERR cases where the error classes differ -- both
+                # parsers reject, but at different validation stages.  Not
+                # saved as an interesting file, but worth seeing in verbose mode.
+                if (
+                    cmp.peg.outcome == Outcome.ERROR
+                    and cmp.postgres.outcome == Outcome.ERROR
+                    and error_class(cmp.peg.error_msg) != error_class(cmp.postgres.error_msg)
+                ):
+                    tqdm.write(f"[ERR-CLR] {sql!r}")
+                    tqdm.write(f"           PEG: {cmp.peg.error_msg.splitlines()[0]}")
+                    tqdm.write(f"           PG:  {cmp.postgres.error_msg.splitlines()[0]}")
+                else:
+                    tqdm.write(f"[{_tag(cmp.peg.outcome):<5}] {sql!r}")
+                    if cmp.peg.error_msg:
+                        tqdm.write(f"        PEG: {cmp.peg.error_msg.splitlines()[0]}")
             bar.update(1)
             continue
 

@@ -15,6 +15,18 @@ class Parser(Enum):
     POSTGRES = "postgres"
 
 
+def error_class(msg: str) -> str:
+    """Extract the error class prefix from an error message.
+
+    e.g. 'Parser Error: syntax error at ...' -> 'Parser Error'
+         'Binder Error: column not found'    -> 'Binder Error'
+         ''                                  -> ''
+    """
+    if not msg:
+        return ""
+    return msg.splitlines()[0].split(":")[0].strip()
+
+
 @dataclass
 class RunResult:
     sql: str

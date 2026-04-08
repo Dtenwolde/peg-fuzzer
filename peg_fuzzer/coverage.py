@@ -109,5 +109,10 @@ class RuleCoverage:
 
         return "\n".join(lines)
 
+    def load_hits(self) -> dict[str, int]:
+        """Return cumulative rule hit counts from previous runs."""
+        rows = self._con.execute("SELECT rule_name, hits FROM rule_hits").fetchall()
+        return {row[0]: row[1] for row in rows}
+
     def close(self) -> None:
         self._con.close()
