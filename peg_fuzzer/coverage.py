@@ -4,7 +4,10 @@ Stores data in interesting/coverage.db (DuckDB).
 
 Schema:
   rule_hits(rule_name VARCHAR PK, hits BIGINT)
-  run_log(id INTEGER, seed BIGINT, queries INTEGER, start_rule VARCHAR, ts TIMESTAMP)
+  run_log(id INTEGER, seed BIGINT, queries INTEGER, start_rule VARCHAR,
+          ok_count INTEGER, err_count INTEGER, crash_count INTEGER,
+          diverge_count INTEGER, ts TIMESTAMP)
+  error_class_log(run_id INTEGER, parser VARCHAR, error_class VARCHAR, count INTEGER)
 
 Each run merges its per-rule hit counts into rule_hits and appends a run_log row,
 so the picture improves the longer the fuzzer campaigns run.
@@ -25,14 +28,33 @@ CREATE TABLE IF NOT EXISTS rule_hits (
 );
 
 CREATE TABLE IF NOT EXISTS run_log (
-    id         INTEGER PRIMARY KEY,
-    seed       BIGINT,
-    queries    INTEGER,
-    new_issues INTEGER,
-    start_rule VARCHAR,
-    ts         TIMESTAMP DEFAULT now()
+    id            INTEGER PRIMARY KEY,
+    seed          BIGINT,
+    queries       INTEGER,
+    new_issues    INTEGER,
+    start_rule    VARCHAR,
+    ok_count      INTEGER DEFAULT 0,
+    err_count     INTEGER DEFAULT 0,
+    crash_count   INTEGER DEFAULT 0,
+    diverge_count INTEGER DEFAULT 0,
+    ts            TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS error_class_log (
+    run_id      INTEGER,
+    parser      VARCHAR,
+    error_class VARCHAR,
+    count       INTEGER
 );
 """
+
+# Columns added after the initial schema -- migrated for existing DBs.
+_MIGRATIONS = [
+    ("ok_count",      "INTEGER DEFAULT 0"),
+    ("err_count",     "INTEGER DEFAULT 0"),
+    ("crash_count",   "INTEGER DEFAULT 0"),
+    ("diverge_count", "INTEGER DEFAULT 0"),
+]
 
 
 class RuleCoverage:
@@ -41,6 +63,14 @@ class RuleCoverage:
         db_path.parent.mkdir(exist_ok=True)
         self._con = duckdb.connect(str(db_path))
         self._con.execute(_SCHEMA)
+        # Add new run_log columns to existing databases.
+        for col, typedef in _MIGRATIONS:
+            try:
+                self._con.execute(
+                    f"ALTER TABLE run_log ADD COLUMN IF NOT EXISTS {col} {typedef}"
+                )
+            except Exception:
+                pass
 
     def merge(
         self,
@@ -49,6 +79,12 @@ class RuleCoverage:
         seed: int,
         start_rule: str,
         new_issues: int = 0,
+        ok_count: int = 0,
+        err_count: int = 0,
+        crash_count: int = 0,
+        diverge_count: int = 0,
+        peg_error_classes: Counter[str] | None = None,
+        pg_error_classes: Counter[str] | None = None,
     ) -> None:
         """Merge one run's hit counts into the cumulative totals and log the run."""
         if run_hits:
@@ -62,9 +98,24 @@ class RuleCoverage:
             )
         next_id = self._con.execute("SELECT coalesce(max(id), 0) + 1 FROM run_log").fetchone()[0]
         self._con.execute(
-            "INSERT INTO run_log (id, seed, queries, new_issues, start_rule) VALUES (?, ?, ?, ?, ?)",
-            [next_id, seed, queries_run, new_issues, start_rule],
+            """
+            INSERT INTO run_log
+                (id, seed, queries, new_issues, start_rule,
+                 ok_count, err_count, crash_count, diverge_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [next_id, seed, queries_run, new_issues, start_rule,
+             ok_count, err_count, crash_count, diverge_count],
         )
+        for parser_name, counter in (("peg", peg_error_classes), ("postgres", pg_error_classes)):
+            if not counter:
+                continue
+            rows = [(next_id, parser_name, cls, cnt) for cls, cnt in counter.items() if cls]
+            if rows:
+                self._con.executemany(
+                    "INSERT INTO error_class_log (run_id, parser, error_class, count) VALUES (?, ?, ?, ?)",
+                    rows,
+                )
 
     def total_queries(self) -> int:
         row = self._con.execute("SELECT coalesce(sum(queries), 0) FROM run_log").fetchone()
@@ -108,6 +159,32 @@ class RuleCoverage:
                 lines.append(f"    ... and {len(never) - top_n} more (use --verbose to list all)")
 
         return "\n".join(lines)
+
+    def error_class_report(self, top_n: int = 10) -> str:
+        """Return top error classes across all runs, grouped by parser."""
+        rows = self._con.execute("""
+            SELECT parser, error_class, sum(count) AS total
+            FROM error_class_log
+            GROUP BY parser, error_class
+            ORDER BY parser, total DESC
+        """).fetchall()
+        if not rows:
+            return ""
+
+        by_parser: dict[str, list[tuple[str, int]]] = {}
+        for parser, cls, total in rows:
+            by_parser.setdefault(parser, []).append((cls, int(total)))
+
+        lines = []
+        for parser in ("peg", "postgres"):
+            entries = by_parser.get(parser, [])
+            if not entries:
+                continue
+            label = "PEG" if parser == "peg" else "Postgres"
+            lines.append(f"\n    {label}:")
+            for cls, cnt in entries[:top_n]:
+                lines.append(f"\n      {cls:<40s} {cnt:>6,}")
+        return "".join(lines)
 
     def load_hits(self) -> dict[str, int]:
         """Return cumulative rule hit counts from previous runs."""

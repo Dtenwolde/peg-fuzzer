@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Convert interesting/diverge_*.sql files into DuckDB sqllogictest .test files.
+Convert interesting/diverge_*.sql and interesting/internal_*.sql files into
+DuckDB sqllogictest .test files.
 
 Postgres is the reference: both parsers should produce the same outcome as
 Postgres does.  If Postgres accepts the SQL, both statement blocks are
 'statement ok'.  If Postgres rejects it, both are 'statement error' with the
-Postgres error message.  The PEG block will currently fail for every diverge
-file -- that's the point: these tests document bugs to fix.
+Postgres error message.
+
+diverge files: PEG and Postgres disagree on OK vs ERROR -- documents bugs to fix.
+internal files: one or both parsers hit an INTERNAL Error -- documents crashes
+                and assertion failures that should become clean error messages.
 
 Usage:
     python scripts/gen_duckdb_tests.py
@@ -24,16 +28,21 @@ INTERESTING_DIR = REPO_ROOT / "interesting"
 DEFAULT_OUT_DIR = REPO_ROOT / "fuzzer_issues"
 
 
-def parse_header(text: str) -> tuple[str, str, str, str]:
-    """Parse the -- PEG/Postgres comment block.
+def parse_header(text: str) -> tuple[str, str, str, str, str]:
+    """Parse the comment block at the top of an interesting/ SQL file.
 
-    Returns (peg_outcome, peg_error, pg_outcome, pg_error).
+    Returns (kind, peg_outcome, peg_error, pg_outcome, pg_error).
+    kind is 'DIVERGE', 'INTERNAL', or 'CRASH'.
     outcome is 'OK' or 'ERR'; error is the raw error string (may be empty).
     """
-    peg_outcome = peg_error = pg_outcome = pg_error = ""
+    kind = peg_outcome = peg_error = pg_outcome = pg_error = ""
     for line in text.splitlines():
         if not line.startswith("--"):
             break
+        m = re.match(r"--\s+(DIVERGE|INTERNAL|CRASH)\s*$", line)
+        if m:
+            kind = m.group(1)
+            continue
         m = re.match(r"--\s+PEG:\s+(OK|ERR)\s*(.*)", line)
         if m:
             peg_outcome, peg_error = m.group(1), m.group(2).strip()
@@ -41,7 +50,7 @@ def parse_header(text: str) -> tuple[str, str, str, str]:
         m = re.match(r"--\s+Postgres:\s+(OK|ERR)\s*(.*)", line)
         if m:
             pg_outcome, pg_error = m.group(1), m.group(2).strip()
-    return peg_outcome, peg_error, pg_outcome, pg_error
+    return kind, peg_outcome, peg_error, pg_outcome, pg_error
 
 
 def extract_sql(text: str) -> str:
@@ -62,6 +71,7 @@ def _block(outcome: str, sql: str, error: str) -> list[str]:
 
 def gen_test(
     stem: str,
+    kind: str,
     peg_outcome: str,
     peg_error: str,
     pg_outcome: str,
@@ -71,8 +81,12 @@ def gen_test(
 ) -> str:
     rel = f"{out_dir.relative_to(REPO_ROOT)}/{stem}.test"
 
-    # Describe the current divergence so it's clear what bug this test covers.
-    if peg_outcome == "OK" and pg_outcome == "ERR":
+    # Describe the current issue so it's clear what bug this test covers.
+    if kind == "INTERNAL":
+        internal_side = "PEG" if "INTERNAL" in peg_error else "Postgres"
+        internal_msg = peg_error if "INTERNAL" in peg_error else pg_error
+        desc = f"{internal_side} hits INTERNAL Error (should be clean error): {internal_msg or '(error)'}"
+    elif peg_outcome == "OK" and pg_outcome == "ERR":
         desc = f"PEG should reject (currently accepts): {pg_error or '(error)'}"
     elif peg_outcome == "ERR" and pg_outcome == "OK":
         desc = f"PEG should accept (currently rejects): {peg_error or '(error)'}"
@@ -112,15 +126,18 @@ def main() -> None:
     interesting_dir = Path(args.interesting_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    sql_files = sorted(interesting_dir.glob("diverge_*.sql"))
+    sql_files = sorted(
+        list(interesting_dir.glob("diverge_*.sql"))
+        + list(interesting_dir.glob("internal_*.sql"))
+    )
     if not sql_files:
-        print(f"No diverge_*.sql files found in {interesting_dir}")
+        print(f"No diverge_*.sql or internal_*.sql files found in {interesting_dir}")
         return
 
     written = skipped = 0
     for path in sql_files:
         text = path.read_text(encoding="utf-8")
-        peg_outcome, peg_error, pg_outcome, pg_error = parse_header(text)
+        kind, peg_outcome, peg_error, pg_outcome, pg_error = parse_header(text)
         sql = extract_sql(text)
 
         if not peg_outcome or not pg_outcome or not sql:
@@ -129,7 +146,7 @@ def main() -> None:
             continue
 
         stem = path.stem
-        content = gen_test(stem, peg_outcome, peg_error, pg_outcome, pg_error, sql, out_dir)
+        content = gen_test(stem, kind, peg_outcome, peg_error, pg_outcome, pg_error, sql, out_dir)
         out_path = out_dir / f"{stem}.test"
         out_path.write_text(content, encoding="utf-8")
         written += 1

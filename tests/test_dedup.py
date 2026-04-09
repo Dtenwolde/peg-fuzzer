@@ -217,6 +217,25 @@ def test_err_err_different_class_has_unique_signature():
     assert _signature(a) != _signature(b)
 
 
+def test_any_internal_peg():
+    cmp = _make_cmp(Outcome.ERROR, Outcome.ERROR,
+                    peg_err="INTERNAL Error: something went wrong")
+    assert cmp.any_internal
+
+
+def test_any_internal_postgres():
+    cmp = _make_cmp(Outcome.ERROR, Outcome.ERROR,
+                    pg_err="INTERNAL Error: null ptr")
+    assert cmp.any_internal
+
+
+def test_any_internal_false_when_no_internal():
+    cmp = _make_cmp(Outcome.ERROR, Outcome.ERROR,
+                    peg_err="Parser Error: syntax error",
+                    pg_err="Binder Error: column not found")
+    assert not cmp.any_internal
+
+
 def test_mark_resolved_unknown_is_noop():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "known.json"

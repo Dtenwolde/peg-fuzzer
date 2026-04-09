@@ -50,3 +50,11 @@ class CompareResult:
     @property
     def any_crash(self) -> bool:
         return self.peg.outcome == Outcome.CRASH or self.postgres.outcome == Outcome.CRASH
+
+    @property
+    def any_internal(self) -> bool:
+        """True when either parser returns an INTERNAL Error."""
+        return (
+            error_class(self.peg.error_msg) == "INTERNAL Error"
+            or error_class(self.postgres.error_msg) == "INTERNAL Error"
+        )
